@@ -41,6 +41,6 @@ EXPOSE 3333
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD node -e "require('http').get('http://localhost:'+(process.env.PORT||3333)+'/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
 
-# Railway runs this on every deploy. Migrations run before the app boots
-# so the schema always matches the code that's about to start serving.
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main.js"]
+# Nest-cli with sourceRoot:"src" emits to dist/src/main.js, not dist/main.js.
+# Migrations run before the app boots so the schema matches the code.
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/main.js"]
