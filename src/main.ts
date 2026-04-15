@@ -24,10 +24,54 @@ import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 
+/**
+ * Pre-flight env check. Runs BEFORE NestFactory.create so any missing
+ * critical var prints an unmistakable banner to stderr instead of getting
+ * swallowed by pino's buffered logger. Without this, Railway shows
+ * silence and the container exits with no actionable signal.
+ */
+function preflightEnv(): void {
+  const required = [
+    { key: 'DATABASE_URL', min: 1 },
+    { key: 'REDIS_URL', min: 1 },
+    { key: 'JWT_ACCESS_SECRET', min: 32 },
+    { key: 'JWT_REFRESH_SECRET', min: 32 },
+  ];
+  const missing: string[] = [];
+  for (const { key, min } of required) {
+    const v = process.env[key];
+    if (!v || v.length < min) {
+      missing.push(
+        `  - ${key}: ${v ? `too short (${v.length} chars, need ≥${min})` : 'not set'}`,
+      );
+    }
+  }
+  if (missing.length > 0) {
+    // eslint-disable-next-line no-console
+    console.error(
+      [
+        '',
+        '╔═══════════════════════════════════════════════════════════════╗',
+        '║         ❌  QueueEase backend: missing env vars              ║',
+        '╚═══════════════════════════════════════════════════════════════╝',
+        '',
+        ...missing,
+        '',
+        'Fix: Railway → queue service → Variables → RAW Editor',
+        '   openssl rand -base64 48   (run twice for the two JWT secrets)',
+        '',
+      ].join('\n'),
+    );
+    process.exit(1);
+  }
+}
+preflightEnv();
+
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
-    bufferLogs: true,
-  });
+  // eslint-disable-next-line no-console
+  console.log('[bootstrap] starting NestFactory.create…');
+
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
   const config = app.get(ConfigService);
   const logger = app.get(Logger);
@@ -122,6 +166,11 @@ async function bootstrap() {
 
 bootstrap().catch((err) => {
   // eslint-disable-next-line no-console
-  console.error('Fatal bootstrap error', err);
+  console.error('');
+  console.error('╔═══════════════════════════════════════════════════════════════╗');
+  console.error('║         ❌  QueueEase backend: fatal bootstrap error         ║');
+  console.error('╚═══════════════════════════════════════════════════════════════╝');
+  console.error(err?.stack ?? err);
+  console.error('');
   process.exit(1);
 });
