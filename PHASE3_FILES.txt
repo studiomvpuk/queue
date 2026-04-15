@@ -1,0 +1,199 @@
+PHASE 3 IMPLEMENTATION - COMPLETE FILE LIST
+=============================================
+
+1. SCHEMA & CONFIGURATION
+   /prisma/schema.prisma                          (MODIFIED - Location fields, Webhook model)
+   /src/config/env.validation.ts                  (MODIFIED - DAILY_API_KEY, USSD_ENABLED)
+   /src/app.module.ts                             (MODIFIED - Phase 3 module imports)
+
+2. PAYMENTS MODULE (Paystack)
+   /src/modules/payments/pricing.ts               (Category-keyed pricing: ₦200–₦1000)
+   /src/modules/payments/dto/initialize-paystack.dto.ts
+   /src/modules/payments/payments.service.ts      (initializePaystack, handlePaystackWebhook, getPaymentHistory)
+   /src/modules/payments/payments.controller.ts   (3 endpoints: initialize, webhook, me)
+   /src/modules/payments/payments.module.ts       (Exports PaymentsService)
+
+3. PRIORITY SLOTS MODULE
+   /src/modules/priority-slots/priority-slots.service.ts      (canBookPriority, setAccessibility, computeQueuePosition)
+   /src/modules/priority-slots/priority-slots.controller.ts   (POST /users/me/accessibility)
+   /src/modules/priority-slots/priority-slots.module.ts       (Exports PrioritySlotsService)
+
+4. VIRTUAL CALLS MODULE (Daily.co)
+   /src/modules/virtual-calls/virtual-calls.service.ts        (createVirtualRoom: calls Daily.co API)
+   /src/modules/virtual-calls/virtual-calls.controller.ts     (POST /virtual-calls/rooms - STAFF only)
+   /src/modules/virtual-calls/virtual-calls.module.ts         (Connects to QueuesModule for WS)
+
+5. API CLIENTS MODULE (OAuth 2.0)
+   /src/modules/api-clients/api-clients.service.ts            (createApiClient, issueAccessToken, validateClientToken)
+   /src/modules/api-clients/api-clients.controller.ts         (POST /admin/api-clients, POST /oauth/token)
+   /src/modules/api-clients/api-client-auth.guard.ts          (ApiClientAuthGuard, @RequireScopes decorator)
+   /src/modules/api-clients/api-clients.module.ts             (Provides JwtModule)
+
+6. WEBHOOKS MODULE (Event Subscriptions)
+   /src/modules/webhooks/webhooks.service.ts                  (createWebhook, deleteWebhook, getWebhooks)
+   /src/modules/webhooks/webhooks.controller.ts               (POST /webhooks, DELETE /webhooks/:id, GET /webhooks/me)
+   /src/modules/webhooks/webhook-dispatcher.service.ts        (dispatchWebhook, processWebhook - BullMQ-backed)
+   /src/modules/webhooks/webhooks.module.ts                   (Registers BullMQ queue, exports dispatcher)
+
+7. USSD MODULE (Feature-Flagged)
+   /src/modules/ussd/ussd.service.ts                          (handleTermiiWebhook: 4-step state machine)
+   /src/modules/ussd/ussd.controller.ts                       (POST /ussd/termii)
+   /src/modules/ussd/ussd.module.ts                           (Connects Prisma + Redis)
+
+8. DOCUMENTATION
+   /PHASE3_ENDPOINTS.md                          (Complete API reference with examples)
+   /PHASE3_IMPLEMENTATION.md                     (Implementation guide, trade-offs, deployment checklist)
+   /PHASE3_FILES.txt                             (This file)
+
+TOTAL: 26 new files + 3 modified files
+
+
+KEY FEATURES BY MODULE
+======================
+
+PAYMENTS:
+- Paystack initialization returns authorizationUrl + reference (valid ~30 min)
+- Webhook verification: HMAC-SHA512 on raw body
+- Idempotent processing by payment reference
+- Atomic booking creation on charge.success event
+- WS event: payment:success emitted to user
+- Never logs card data; never stores authorization URL post-response
+- Amount calculation: getPrioritySlotPrice(LocationCategory) → kobo value
+- Free for users with isAccessibility=true
+
+PRIORITY SLOTS:
+- 20% capacity cap per location per day
+- Priority bookings skip non-priority queue members same slot
+- Accessibility self-declaration with optional proof document URL
+- Audit trail for all declarations and priority booking state changes
+- canBookPriority() returns { allowed, remainingSlots }
+
+VIRTUAL CALLS:
+- Daily.co integration via API key
+- STAFF-only room creation
+- Room name: queuease-{booking.code}
+- 1-hour room expiry (configurable at Daily.co)
+- WS event: virtual:room-ready sent to user with URL + expiry
+- Extensible: booking metadata can store roomUrl
+
+API CLIENTS:
+- OAuth 2.0 client credentials flow
+- Admin creates client → returns clientId + clientSecret (NEVER retrievable again)
+- clientSecret hashed with argon2
+- Token endpoint: POST /oauth/token → 30-min JWT (type: 'client')
+- Scope-based access via @RequireScopes('scope1', 'scope2') decorator
+- ApiClientAuthGuard: allows user JWT or client JWT
+- Rate limit: 10 requests/min on /oauth/token
+
+WEBHOOKS:
+- Clients create subscriptions for events (e.g., 'booking.created', 'booking.served')
+- Webhook secret returned once (used for HMAC-SHA256 verification)
+- Signature header: X-QueueEase-Signature
+- BullMQ-backed dispatch with 3 retries:
+  * Exponential backoff: 2s → 4s → 8s
+  * 10-second timeout per request
+  * Removed on completion (no persistence post-success)
+- Idempotent: keyed by (event, bookingId, timestamp)
+
+USSD:
+- Feature-gated by USSD_ENABLED env var
+- Termii webhook signature verification
+- 4-step state machine: category → location → slot → confirm
+- State stored in Redis with 5-minute TTL per phone
+- Auto-cleanup via Redis TTL
+- Returns USSD menu text (CON/END prefix)
+
+
+DEPENDENCIES (add to package.json)
+====================================
+axios                    (HTTP client for external APIs)
+argon2                   (Password hashing)
+date-fns                 (Date utilities for scheduling)
+@nestjs/bull             (Job queue processor)
+bull                     (Job queue library)
+redis                    (Already required by @nestjs/cache-manager or @nestjs/common)
+
+
+ENVIRONMENT VARIABLES (add to .env.example & production)
+=========================================================
+PAYSTACK_SECRET_KEY=sk_live_xxx...
+PAYSTACK_WEBHOOK_SECRET=whsec_xxx...
+DAILY_API_KEY=your-daily-co-api-key
+USSD_ENABLED=false                    # Set to 'true' to enable
+
+
+PRISMA MIGRATION COMMAND
+==========================
+npx prisma migrate dev --name phase3_payments_webhooks_virtual
+
+Schema changes:
+  + Location.priorityEnabled (Boolean, default true)
+  + Location.virtualEnabled (Boolean, default false)
+  + Webhook table (id, apiClientId FK, url, secret, events[], isActive, createdAt, updatedAt)
+  + ApiClient.webhooks relation
+
+
+REGISTRATION IN APP.MODULE
+===========================
+All 6 modules registered in imports array:
+  - PaymentsModule
+  - PrioritySlotsModule
+  - VirtualCallsModule
+  - ApiClientsModule
+  - WebhooksModule
+  - UssdModule
+
+Currently placed in "Feature modules (Phase 3)" section (lines 91-97).
+
+
+TESTING STRATEGY
+================
+Unit Tests:
+  - PaymentsService: Mock Paystack API, test webhook signature verification
+  - PrioritySlotsService: Test 20% cap calculation, priority skip logic
+  - VirtualCallsService: Mock Daily.co API, verify room creation
+  - ApiClientsService: Test JWT issuance, scope validation, credential verification
+  - WebhookDispatcherService: Mock job queue, test retry logic, signature generation
+  - UssdService: Test state machine transitions, Redis state persistence
+
+Integration Tests:
+  - E2E payment flow: initialize → webhook → booking creation
+  - Priority booking with capacity overage scenarios
+  - Virtual room creation on booking served-transition
+  - OAuth client token issuance + validation
+  - Webhook dispatch on booking state change with BullMQ
+  - USSD state machine 4-step flow
+
+E2E Tests:
+  - Full payment flow with Paystack sandbox
+  - Complete priority booking workflow
+  - Virtual call room creation and expiry
+  - API client authentication and scope enforcement
+
+
+NEXT STEPS AFTER MERGE
+======================
+1. Install new npm dependencies (axios, argon2, date-fns, @nestjs/bull, bull)
+2. Run Prisma migration (creates new tables/columns)
+3. Inject PrioritySlotsService into BookingsService constructor
+4. Call webhookDispatcher.dispatchWebhook(event, data) on booking state changes
+5. Call virtualCalls.createVirtualRoom() on serving-transition for virtual-enabled locations
+6. Add BullMQ Redis instance to docker-compose or k8s manifests
+7. Configure Paystack webhook delivery (URL: {API_BASE}/payments/paystack/webhook)
+8. Seed test ApiClient records for enterprise testing
+9. Create frontend forms for:
+   - Priority slot payment flow (show price, redirect to Paystack)
+   - Accessibility declaration
+   - Webhook management dashboard (for partners)
+10. Deploy + monitor audit logs for payment, webhook, API client events
+
+
+KNOWN LIMITATIONS / FUTURE ENHANCEMENTS
+========================================
+1. Client secret rotation: Current impl single-return only; future: add rotation API
+2. Webhook delivery monitoring: No built-in dashboard; future: webhook logs + retry UI
+3. Accessibility verification: Proof URL stored but not auto-verified; future: async human review workflow
+4. USSD phone → User account: Currently simplified; production needs linkage to User.phone
+5. Virtual room refresh: Daily.co room expires at 1hr; future: implement refresh token mechanism
+6. Per-client rate limits: Structure in place but not enforced; future: use Redis + @Throttle() override
+7. Webhook event schema: Currently loose string[]; future: enum of allowed events

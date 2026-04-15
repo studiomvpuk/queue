@@ -1,0 +1,391 @@
+// ============================================================
+// QueueEase — Prisma schema
+// Covers all three phases. Commented by phase for clarity.
+// ============================================================
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ========== Enums ==========
+
+enum UserRole {
+  CUSTOMER
+  STAFF
+  MANAGER
+  OWNER
+  ADMIN
+}
+
+enum LocationCategory {
+  BANK
+  HOSPITAL
+  GOVERNMENT
+  SALON
+  TELECOM
+  OTHER
+}
+
+enum BookingStatus {
+  PENDING      // Slot held, awaiting user confirm (rare — used for payment flows in Phase 3)
+  CONFIRMED    // Active booking, user not yet present
+  ARRIVED      // User has tapped "I've arrived"
+  SERVING      // Currently being served
+  SERVED       // Service complete
+  NO_SHOW      // Slot passed, user never arrived
+  CANCELLED    // Cancelled by user or business
+}
+
+enum BookingSource {
+  APP          // Booked via mobile app
+  WEB          // Booked via web portal
+  WALK_IN      // Added by staff as a walk-in
+  USSD         // Phase 3
+}
+
+enum NotificationTier {
+  POSITION_10
+  POSITION_5
+  POSITION_3
+  YOUR_TURN
+  BOOKING_CONFIRMED
+  BOOKING_CANCELLED
+  RATING_PROMPT
+}
+
+enum NotificationChannel {
+  PUSH
+  SMS
+  EMAIL
+}
+
+enum AuditAction {
+  USER_LOGIN
+  USER_LOGOUT
+  OTP_REQUESTED
+  OTP_VERIFIED
+  OTP_FAILED
+  BOOKING_CREATED
+  BOOKING_UPDATED
+  BOOKING_CANCELLED
+  BOOKING_SERVED
+  BOOKING_NO_SHOW
+  BOOKING_REVIEWED
+  REVIEW_RESPONDED
+  LOCATION_CREATED
+  LOCATION_UPDATED
+  PERMISSIONS_CHANGED
+  PAYMENT_INITIATED
+  PAYMENT_COMPLETED
+  SAVED_LOCATION_ADDED
+  SAVED_LOCATION_REMOVED
+  BUSINESS_CREATED
+  BUSINESS_UPDATED
+  ACCESSIBILITY_DECLARED
+}
+
+// ========== Phase 1 ==========
+
+model User {
+  id               String    @id @default(cuid())
+  phone            String    @unique
+  firstName        String
+  email            String?   @unique
+  role             UserRole  @default(CUSTOMER)
+  isVerified       Boolean   @default(false)
+  isAccessibility  Boolean   @default(false) // elderly/accessibility — priority slot eligibility
+  strikes          Int       @default(0)     // no-show abuse
+  strikeResetAt    DateTime?
+  bannedUntil      DateTime?
+  notificationPref Json      @default("{}")  // per-tier channel prefs
+  pushTokens       PushToken[]
+  bookings         Booking[]
+  reviews          Review[]
+  staffAt          StaffMembership[]
+  sessions         Session[]
+  auditEvents      AuditLog[]
+  savedLocations   SavedLocation[]
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+
+  @@index([phone])
+  @@index([createdAt])
+}
+
+model Session {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshHash   String   // argon2 hash of refresh token (never stored plaintext)
+  userAgent     String?
+  ip            String?
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  createdAt     DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PushToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  platform  String   // "ios" | "android" | "web"
+  createdAt DateTime @default(now())
+  lastSeen  DateTime @default(now())
+
+  @@index([userId])
+}
+
+// --- Businesses & locations ---
+
+model Business {
+  id          String     @id @default(cuid())
+  name        String
+  slug        String     @unique
+  logoUrl     String?
+  locations   Location[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+model Location {
+  id              String            @id @default(cuid())
+  businessId      String
+  business        Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name            String
+  slug            String            @unique
+  category        LocationCategory
+  address         String
+  city            String
+  state           String
+  latitude        Float
+  longitude       Float
+
+  // Slot configuration
+  slotDurationMin Int               @default(15)
+  maxQueueSize    Int               @default(50)
+  walkInPercent   Int               @default(30) // 0..100
+
+  // Business hours: array of { dayOfWeek: 0-6, open: "HH:mm", close: "HH:mm" }
+  hours           Json              @default("[]")
+
+  // Live rolling stats (denormalised for speed, recalculated by a job)
+  avgServiceSec   Int               @default(240)   // 4 min default
+  ratingAvg       Float             @default(0)
+  ratingCount     Int               @default(0)
+
+  // Phase 3: Priority slots & virtual calls
+  priorityEnabled Boolean           @default(true)
+  virtualEnabled  Boolean           @default(false)
+
+  isActive        Boolean           @default(true)
+  bookings        Booking[]
+  staff           StaffMembership[]
+  reviews         Review[]
+  savedBy         SavedLocation[]
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  deletedAt       DateTime?
+
+  @@index([category, isActive])
+  @@index([latitude, longitude])
+  @@index([businessId])
+}
+
+model StaffMembership {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  locationId  String
+  location    Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  role        UserRole
+  createdAt   DateTime @default(now())
+
+  @@unique([userId, locationId])
+  @@index([locationId])
+}
+
+// --- Bookings & queue state ---
+
+model Booking {
+  id               String         @id @default(cuid())
+  code             String         @unique            // short check-in code, e.g. "A4-91"
+  userId           String?                          // null for walk-ins
+  user             User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
+  walkInName       String?
+  walkInPhone      String?
+  locationId       String
+  location         Location       @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  slotStart        DateTime
+  slotEnd          DateTime
+
+  status           BookingStatus  @default(CONFIRMED)
+  source           BookingSource  @default(APP)
+  position         Int?                             // live position in queue, updated by service
+  isPriority       Boolean        @default(false)   // Phase 3
+  virtualRoomUrl   String?                          // Phase 3 — Daily.co room URL
+  virtualRoomExpiresAt DateTime?
+
+  arrivedAt        DateTime?
+  servedStartAt    DateTime?
+  servedEndAt      DateTime?
+  cancelledAt      DateTime?
+  cancelReason     String?
+  noShowAt         DateTime?
+
+  notifications    Notification[]
+  review           Review?
+
+  // For optimistic concurrency on slot writes
+  version          Int            @default(0)
+
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@index([locationId, status, slotStart])
+  @@index([userId, status])
+  @@index([slotStart])
+  @@unique([locationId, slotStart, userId]) // prevents double-booking same slot per user
+}
+
+model Notification {
+  id         String              @id @default(cuid())
+  bookingId  String
+  booking    Booking             @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  tier       NotificationTier
+  channel    NotificationChannel
+  sentAt     DateTime?
+  failedAt   DateTime?
+  failReason String?
+  createdAt  DateTime            @default(now())
+
+  @@index([bookingId])
+  @@index([createdAt])
+}
+
+model OtpRequest {
+  id           String    @id @default(cuid())
+  phone        String
+  codeHash     String                              // argon2 hash of the 6-digit code
+  attempts     Int       @default(0)
+  expiresAt    DateTime
+  consumedAt   DateTime?
+  ip           String?
+  userAgent    String?
+  createdAt    DateTime  @default(now())
+
+  @@index([phone, createdAt])
+  @@index([expiresAt])
+}
+
+// ========== Phase 2 ==========
+
+model Review {
+  id          String    @id @default(cuid())
+  bookingId   String    @unique
+  booking     Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  locationId  String
+  location    Location  @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  rating      Int       // 1..5
+  comment     String?
+  response    String?   // merchant reply
+  isModerated Boolean   @default(false)
+  isHidden    Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+
+  @@index([locationId, createdAt])
+}
+
+model SavedLocation {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  locationId  String
+  location    Location  @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+
+  @@unique([userId, locationId])
+  @@index([userId])
+}
+
+// ========== Phase 3 ==========
+
+model Payment {
+  id             String   @id @default(cuid())
+  bookingId      String?
+  userId         String
+  provider       String   // "paystack"
+  reference      String   @unique
+  amountKobo     Int
+  currency       String   @default("NGN")
+  status         String   // "initiated" | "success" | "failed" | "refunded"
+  rawPayload     Json?
+  createdAt      DateTime @default(now())
+  completedAt    DateTime?
+
+  @@index([userId])
+  @@index([reference])
+}
+
+model ApiClient {
+  id            String   @id @default(cuid())
+  name          String
+  clientId      String   @unique
+  clientSecretHash String
+  scopes        String[] @default([])
+  isActive      Boolean  @default(true)
+  rateLimit     Int      @default(100)   // requests per minute
+  createdAt     DateTime @default(now())
+  revokedAt     DateTime?
+  webhooks      Webhook[]
+}
+
+// ========== Cross-cutting ==========
+
+model AuditLog {
+  id         String      @id @default(cuid())
+  userId     String?
+  user       User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     AuditAction
+  entity     String?     // e.g. "Booking", "Location"
+  entityId   String?
+  ip         String?
+  userAgent  String?
+  metadata   Json?
+  createdAt  DateTime    @default(now())
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@index([entity, entityId])
+}
+
+// ========== Phase 3: Webhooks & Virtual Calls ==========
+
+model Webhook {
+  id          String   @id @default(cuid())
+  apiClientId String
+  apiClient   ApiClient @relation(fields: [apiClientId], references: [id], onDelete: Cascade)
+  url         String
+  secret      String   // HMAC-SHA256 key for signing
+  events      String[] @default([])
+  isActive    Boolean  @default(true)
+  lastFireAt  DateTime?
+  lastError   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([apiClientId])
+}
