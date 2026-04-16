@@ -1,6 +1,7 @@
 import {
   Injectable,
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
@@ -8,6 +9,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { AuditService } from '../../common/audit/audit.service';
 import { AuditAction, UserRole } from '@prisma/client';
 import { CreateBusinessDto } from './dto/create-business.dto';
+import { RegisterBusinessDto } from './dto/register-business.dto';
 import { InviteStaffDto } from './dto/invite-staff.dto';
 
 @Injectable()
@@ -16,6 +18,117 @@ export class BusinessesService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
   ) {}
+
+  /**
+   * Public business registration — no auth required.
+   * Creates a user (or finds existing by email/phone), promotes to OWNER,
+   * and creates the business record.
+   */
+  async registerBusiness(dto: RegisterBusinessDto, ip: string, userAgent: string) {
+    // Generate slug from business name
+    const baseSlug = dto.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '');
+
+    // Check if slug already exists
+    const existingBusiness = await this.prisma.business.findUnique({
+      where: { slug: baseSlug },
+    });
+    if (existingBusiness) {
+      throw new ConflictException('A business with a similar name already exists. Please choose a different name.');
+    }
+
+    // Find or create the contact person as a user
+    let user = await this.prisma.user.findFirst({
+      where: {
+        OR: [
+          { email: dto.contactEmail },
+          { phone: dto.contactPhone },
+        ],
+      },
+    });
+
+    if (user && user.role === UserRole.OWNER) {
+      // Check if this owner already has a business (Phase 1: one business per owner)
+      const existingOwnerBusiness = await this.prisma.business.findFirst({
+        where: { ownerId: user.id },
+      });
+      if (existingOwnerBusiness) {
+        throw new ConflictException('This account already owns a business. Please log in to manage it.');
+      }
+    }
+
+    // Use a transaction to ensure atomicity
+    const result = await this.prisma.$transaction(async (tx) => {
+      if (!user) {
+        // Create new user with OWNER role
+        user = await tx.user.create({
+          data: {
+            firstName: dto.contactFirstName,
+            email: dto.contactEmail,
+            phone: dto.contactPhone,
+            role: UserRole.OWNER,
+          },
+        });
+      } else {
+        // Promote existing user to OWNER if they're a CUSTOMER
+        if (user.role === UserRole.CUSTOMER) {
+          user = await tx.user.update({
+            where: { id: user.id },
+            data: {
+              role: UserRole.OWNER,
+              firstName: user.firstName || dto.contactFirstName,
+            },
+          });
+        }
+      }
+
+      // Create the business
+      const business = await tx.business.create({
+        data: {
+          name: dto.name,
+          slug: baseSlug,
+          size: dto.size as any,
+          type: dto.type as any,
+          category: dto.category as any,
+          description: dto.description,
+          cacNumber: dto.cacNumber,
+          tinNumber: dto.tinNumber,
+          contactFirstName: dto.contactFirstName,
+          contactLastName: dto.contactLastName,
+          contactEmail: dto.contactEmail,
+          contactPhone: dto.contactPhone,
+          contactRole: dto.contactRole,
+          businessEmail: dto.businessEmail,
+          businessPhone: dto.businessPhone,
+          website: dto.website,
+          address: dto.address,
+          city: dto.city,
+          state: dto.state,
+          ownerId: user!.id,
+        },
+      });
+
+      return { user: user!, business };
+    });
+
+    // Audit the registration
+    await this.audit.record({
+      userId: result.user.id,
+      action: AuditAction.BUSINESS_CREATED,
+      entity: 'Business',
+      entityId: result.business.id,
+      ip,
+      userAgent,
+      metadata: { size: dto.size, type: dto.type, category: dto.category },
+    });
+
+    return {
+      business: result.business,
+      message: 'Business registered successfully. Your account is pending verification.',
+    };
+  }
 
   async createBusiness(
     userId: string,

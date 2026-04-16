@@ -13,10 +13,12 @@ import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
 import { UserRole } from '@prisma/client';
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
+import { Public } from '../../common/decorators/public.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { BusinessScopeGuard } from '../../common/guards/business-scope.guard';
 import { BusinessesService } from './businesses.service';
 import { CreateBusinessDto } from './dto/create-business.dto';
+import { RegisterBusinessDto } from './dto/register-business.dto';
 import { InviteStaffDto } from './dto/invite-staff.dto';
 
 @ApiTags('businesses')
@@ -24,10 +26,28 @@ import { InviteStaffDto } from './dto/invite-staff.dto';
 export class BusinessesController {
   constructor(private readonly businesses: BusinessesService) {}
 
+  /**
+   * Public endpoint — no auth required.
+   * Businesses register here, an account is created/promoted to OWNER,
+   * and the business is put in PENDING verification state.
+   */
+  @Post('register')
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Register a new business (public, no auth required)' })
+  @ApiCreatedResponse({ description: 'Business registered, pending verification' })
+  async registerBusiness(
+    @Body() dto: RegisterBusinessDto,
+    @Ip() ip: string,
+    @Req() req: Request,
+  ) {
+    return this.businesses.registerBusiness(dto, ip, req.header('user-agent') || '');
+  }
+
   @Post()
   @Roles(UserRole.OWNER)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  @ApiOperation({ summary: 'Create a new business (OWNER only)' })
+  @ApiOperation({ summary: 'Create a new business (OWNER only, authenticated)' })
   @ApiCreatedResponse({ description: 'Business' })
   async createBusiness(
     @CurrentUser() user: AuthenticatedUser,

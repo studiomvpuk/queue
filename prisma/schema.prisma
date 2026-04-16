@@ -107,6 +107,7 @@ model User {
   pushTokens       PushToken[]
   bookings         Booking[]
   reviews          Review[]
+  businesses       Business[]
   staffAt          StaffMembership[]
   sessions         Session[]
   auditEvents      AuditLog[]
@@ -148,14 +149,78 @@ model PushToken {
 
 // --- Businesses & locations ---
 
+enum BusinessSize {
+  INDIVIDUAL
+  SME
+  ENTERPRISE
+}
+
+enum BusinessType {
+  SOLE_PROPRIETORSHIP
+  PARTNERSHIP
+  LIMITED_LIABILITY
+  NGO
+  GOVERNMENT
+  HOSPITAL
+  EDUCATIONAL
+  OTHER
+}
+
+enum VerificationStatus {
+  PENDING
+  UNDER_REVIEW
+  VERIFIED
+  REJECTED
+}
+
 model Business {
-  id          String     @id @default(cuid())
-  name        String
-  slug        String     @unique
-  logoUrl     String?
-  locations   Location[]
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+  id                  String             @id @default(cuid())
+  name                String
+  slug                String             @unique
+  logoUrl             String?
+
+  // Registration details
+  size                BusinessSize       @default(SME)
+  type                BusinessType       @default(OTHER)
+  category            LocationCategory   @default(OTHER)
+  description         String?
+
+  // Legal / verification
+  cacNumber           String?            // CAC RC Number — required for SME & ENTERPRISE
+  tinNumber           String?            // Tax Identification Number
+  verificationStatus  VerificationStatus @default(PENDING)
+  verificationNote    String?            // Admin note on why rejected, etc.
+  verifiedAt          DateTime?
+
+  // Contact person (owner who registered)
+  contactFirstName    String
+  contactLastName     String
+  contactEmail        String
+  contactPhone        String
+  contactRole         String?            // e.g. "CEO", "Manager", "Owner"
+
+  // Business contact
+  businessEmail       String?
+  businessPhone       String?
+  website             String?
+
+  // Address
+  address             String?
+  city                String?
+  state               String?
+  country             String             @default("Nigeria")
+
+  // Owner relationship
+  ownerId             String?
+  owner               User?              @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+
+  locations           Location[]
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  @@index([ownerId])
+  @@index([verificationStatus])
+  @@index([category])
 }
 
 model Location {
