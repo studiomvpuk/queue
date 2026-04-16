@@ -95,7 +95,8 @@ export class OtpService {
       data: { phone: identifier, codeHash, expiresAt, ip, userAgent },
     });
 
-    // Deliver OTP via the chosen channel
+    // Deliver OTP via the chosen channel — propagate failures so the client
+    // knows the code was never delivered instead of silently succeeding.
     try {
       if (channel === OtpChannel.EMAIL) {
         await this.email.sendOtp(identifier, code);
@@ -104,6 +105,13 @@ export class OtpService {
       }
     } catch (err) {
       this.logger.error(`OTP delivery failed (${channel}): ${(err as Error).message}`);
+      throw new HttpException(
+        {
+          error: 'DELIVERY_FAILED',
+          message: `Could not deliver OTP via ${channel}. Please try again later.`,
+        },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
     }
 
     // Set cooldown
