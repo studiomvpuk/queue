@@ -19,7 +19,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     // Confirm the user still exists and isn't soft-deleted or banned
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
-      select: { id: true, role: true, phone: true, deletedAt: true, bannedUntil: true },
+      select: { id: true, role: true, phone: true, email: true, deletedAt: true, bannedUntil: true },
     });
     if (!user || user.deletedAt) throw new UnauthorizedException({ error: 'USER_GONE' });
     if (user.bannedUntil && user.bannedUntil > new Date()) {
