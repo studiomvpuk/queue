@@ -25,6 +25,6 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     if (user.bannedUntil && user.bannedUntil > new Date()) {
       throw new UnauthorizedException({ error: 'BANNED', message: 'Account temporarily suspended' });
     }
-    return { sub: user.id, role: user.role, phone: user.phone };
+    return { sub: user.id, role: user.role, phone: user.phone, email: user.email };
   }
 }

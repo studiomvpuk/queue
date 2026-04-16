@@ -9,7 +9,8 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 export interface JwtPayload {
   sub: string;
   role: string;
-  phone: string;
+  phone: string | null;
+  email?: string | null;
 }
 
 export interface TokenPair {
@@ -42,7 +43,7 @@ export class TokenService {
     const refreshTtl = Number(this.config.getOrThrow('JWT_REFRESH_TTL'));
     const refreshSecret = this.config.getOrThrow<string>('JWT_REFRESH_SECRET');
 
-    const payload: JwtPayload = { sub: user.id, role: user.role, phone: user.phone };
+    const payload: JwtPayload = { sub: user.id, role: user.role, phone: user.phone, email: user.email };
     const accessToken = await this.jwt.signAsync(payload, { expiresIn: accessTtl });
 
     // Refresh is a JWT too, but we also store its hash server-side so we can revoke.

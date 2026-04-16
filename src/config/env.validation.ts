@@ -40,6 +40,9 @@ const schema = z.object({
   TWILIO_FROM: z.string().optional().default(''),
   SMS_DAILY_CAP: z.coerce.number().int().positive().default(5),
 
+  RESEND_API_KEY: z.string().optional().default(''),
+  RESEND_FROM_EMAIL: z.string().optional().default('QueueEase <noreply@queueease.com>'),
+
   EXPO_ACCESS_TOKEN: z.string().optional().default(''),
 
   PAYSTACK_SECRET_KEY: z.string().optional().default(''),

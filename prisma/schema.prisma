@@ -94,9 +94,9 @@ enum AuditAction {
 
 model User {
   id               String    @id @default(cuid())
-  phone            String    @unique
+  phone            String?   @unique  // nullable for email-only signups
   firstName        String
-  email            String?   @unique
+  email            String?   @unique  // nullable for phone-only signups
   role             UserRole  @default(CUSTOMER)
   isVerified       Boolean   @default(false)
   isAccessibility  Boolean   @default(false) // elderly/accessibility — priority slot eligibility

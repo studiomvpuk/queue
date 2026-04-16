@@ -12,6 +12,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { SmsModule } from '../notifications/sms/sms.module';
+import { EmailModule } from '../notifications/email/email.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { SmsModule } from '../notifications/sms/sms.module';
       inject: [ConfigService],
     }),
     SmsModule,
+    EmailModule,
   ],
   controllers: [AuthController],
   providers: [
@@ -32,7 +34,6 @@ import { SmsModule } from '../notifications/sms/sms.module';
     TokenService,
     OtpService,
     JwtStrategy,
-    // Global auth guard — every route is protected by default; opt out with @Public()
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
   ],

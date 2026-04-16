@@ -19,9 +19,12 @@ export class AuthController {
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('otp/request')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Request a one-time code via SMS' })
+  @ApiOperation({ summary: 'Request a one-time code via email or SMS' })
   requestOtp(@Body() dto: RequestOtpDto, @Ip() ip: string, @Req() req: Request) {
-    return this.auth.requestOtp(dto.phone, { ip, userAgent: req.header('user-agent') });
+    return this.auth.requestOtp(dto.channel, dto.phone, dto.email, {
+      ip,
+      userAgent: req.header('user-agent'),
+    });
   }
 
   @Public()
@@ -30,7 +33,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Verify OTP, sign in or sign up' })
   verifyOtp(@Body() dto: VerifyOtpDto, @Ip() ip: string, @Req() req: Request) {
-    return this.auth.verifyOtp(dto.phone, dto.otp, dto.firstName, {
+    return this.auth.verifyOtp(dto.channel, dto.phone, dto.email, dto.otp, dto.firstName, {
       ip,
       userAgent: req.header('user-agent'),
     });

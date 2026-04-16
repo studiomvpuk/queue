@@ -5,18 +5,9 @@ import { randomInt } from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisService } from '../../common/redis/redis.service';
 import { SmsService } from '../notifications/sms/sms.service';
+import { EmailService } from '../notifications/email/email.service';
+import { OtpChannel } from './dto/request-otp.dto';
 
-/**
- * OtpService — issues + verifies one-time passcodes for phone auth.
- *
- * Security properties:
- *   - Codes stored only as argon2 hashes; plaintext never persisted
- *   - 5-attempt ceiling per code; further attempts invalidate the code
- *   - Per-phone cooldown on resends (configurable, default 60s)
- *   - Per-IP flood control via Redis counter (independent of user-level limit)
- *   - Codes expire in 5 minutes
- *   - Timing-safe verification via argon2.verify
- */
 @Injectable()
 export class OtpService {
   private readonly logger = new Logger(OtpService.name);
@@ -25,18 +16,39 @@ export class OtpService {
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
     private readonly sms: SmsService,
+    private readonly email: EmailService,
     private readonly config: ConfigService,
   ) {}
 
-  /** Normalise to E.164 (+234...) */
+  /** Normalise Nigerian phone to E.164 (+234...) */
   normalisePhone(raw: string): string {
     if (raw.startsWith('+234')) return raw;
     if (raw.startsWith('0') && raw.length === 11) return `+234${raw.slice(1)}`;
     return raw;
   }
 
-  async issue(phone: string, ip?: string, userAgent?: string): Promise<{ expiresAt: Date }> {
-    const normalised = this.normalisePhone(phone);
+  /**
+   * The "identifier" is the normalised value we store in OtpRequest.phone.
+   * For email channel we use the email address directly; for phone we
+   * normalise to E.164.
+   */
+  private resolveIdentifier(channel: OtpChannel, phone?: string, emailAddr?: string): string {
+    if (channel === OtpChannel.EMAIL) {
+      if (!emailAddr) throw new BadRequestException('Email required for email OTP');
+      return emailAddr.trim().toLowerCase();
+    }
+    if (!phone) throw new BadRequestException('Phone required for phone OTP');
+    return this.normalisePhone(phone);
+  }
+
+  async issue(
+    channel: OtpChannel,
+    phone: string | undefined,
+    emailAddr: string | undefined,
+    ip?: string,
+    userAgent?: string,
+  ): Promise<{ expiresAt: Date }> {
+    const identifier = this.resolveIdentifier(channel, phone, emailAddr);
 
     // IP-level flood guard
     if (ip) {
@@ -50,15 +62,20 @@ export class OtpService {
       }
     }
 
-    // Phone-level cooldown
-    const cooldownKey = `otp:cooldown:${normalised}`;
+    // Per-identifier cooldown
+    const cooldownKey = `otp:cooldown:${identifier}`;
     const cooldown = this.config.get<number>('OTP_RESEND_COOLDOWN_SECONDS') ?? 60;
-    const remaining = await this.redis.client.ttl(cooldownKey);
-    if (remaining > 0) {
-      throw new HttpException(
-        { error: 'COOLDOWN', message: `Wait ${remaining}s before requesting another code` },
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
+    try {
+      const remaining = await this.redis.client.ttl(cooldownKey);
+      if (remaining > 0) {
+        throw new HttpException(
+          { error: 'COOLDOWN', message: `Wait ${remaining}s before requesting another code` },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      // Redis down — skip cooldown check
     }
 
     // Generate, hash, persist
@@ -68,39 +85,48 @@ export class OtpService {
     const ttl = this.config.get<number>('OTP_TTL_SECONDS') ?? 300;
     const expiresAt = new Date(Date.now() + ttl * 1000);
 
-    // Invalidate any unconsumed prior OTPs for this phone (single active code policy)
+    // Invalidate unconsumed prior OTPs for this identifier
     await this.prisma.otpRequest.updateMany({
-      where: { phone: normalised, consumedAt: null, expiresAt: { gt: new Date() } },
+      where: { phone: identifier, consumedAt: null, expiresAt: { gt: new Date() } },
       data: { expiresAt: new Date() },
     });
 
     await this.prisma.otpRequest.create({
-      data: { phone: normalised, codeHash, expiresAt, ip, userAgent },
+      data: { phone: identifier, codeHash, expiresAt, ip, userAgent },
     });
 
-    // Send SMS (best-effort — failure still returns success to avoid leaking phone existence)
+    // Deliver OTP via the chosen channel
     try {
-      await this.sms.sendOtp(normalised, code);
+      if (channel === OtpChannel.EMAIL) {
+        await this.email.sendOtp(identifier, code);
+      } else {
+        await this.sms.sendOtp(identifier, code);
+      }
     } catch (err) {
-      this.logger.error(`SMS failed for ${normalised.slice(0, 6)}***: ${(err as Error).message}`);
+      this.logger.error(`OTP delivery failed (${channel}): ${(err as Error).message}`);
     }
 
     // Set cooldown
-    await this.redis.client.set(cooldownKey, '1', 'EX', cooldown);
+    try {
+      await this.redis.client.set(cooldownKey, '1', 'EX', cooldown);
+    } catch {
+      // Redis down — skip cooldown set
+    }
 
     return { expiresAt };
   }
 
-  /**
-   * Verify a code. Returns normalised phone on success.
-   * Throws BadRequest for any failure path — uniform error to prevent enumeration.
-   */
-  async verify(phone: string, code: string): Promise<{ phone: string }> {
-    const normalised = this.normalisePhone(phone);
+  async verify(
+    channel: OtpChannel,
+    phone: string | undefined,
+    emailAddr: string | undefined,
+    code: string,
+  ): Promise<{ identifier: string; channel: OtpChannel }> {
+    const identifier = this.resolveIdentifier(channel, phone, emailAddr);
     const maxAttempts = this.config.get<number>('OTP_MAX_ATTEMPTS') ?? 5;
 
     const record = await this.prisma.otpRequest.findFirst({
-      where: { phone: normalised, consumedAt: null, expiresAt: { gt: new Date() } },
+      where: { phone: identifier, consumedAt: null, expiresAt: { gt: new Date() } },
       orderBy: { createdAt: 'desc' },
     });
 
@@ -109,7 +135,6 @@ export class OtpService {
     }
 
     if (record.attempts >= maxAttempts) {
-      // Burn the record so subsequent attempts find nothing
       await this.prisma.otpRequest.update({ where: { id: record.id }, data: { expiresAt: new Date() } });
       throw new BadRequestException({ error: 'INVALID_OTP', message: 'Invalid or expired code' });
     }
@@ -129,14 +154,12 @@ export class OtpService {
       data: { consumedAt: new Date() },
     });
 
-    return { phone: normalised };
+    return { identifier, channel };
   }
 
   private generateCode(length: number): string {
-    // Cryptographically strong 6-digit default
     const min = 10 ** (length - 1);
     const max = 10 ** length;
     return randomInt(min, max).toString();
   }
 }
-

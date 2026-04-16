@@ -4,6 +4,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { AuditService } from '../../common/audit/audit.service';
 import { OtpService } from './otp.service';
 import { TokenService, TokenPair } from './token.service';
+import { OtpChannel } from './dto/request-otp.dto';
 
 interface AuthMeta {
   ip?: string;
@@ -19,31 +20,50 @@ export class AuthService {
     private readonly audit: AuditService,
   ) {}
 
-  async requestOtp(phone: string, meta: AuthMeta): Promise<{ expiresAt: Date }> {
-    const result = await this.otp.issue(phone, meta.ip, meta.userAgent);
+  async requestOtp(
+    channel: OtpChannel,
+    phone: string | undefined,
+    email: string | undefined,
+    meta: AuthMeta,
+  ): Promise<{ expiresAt: Date }> {
+    const result = await this.otp.issue(channel, phone, email, meta.ip, meta.userAgent);
     await this.audit.record({
       action: AuditAction.OTP_REQUESTED,
       entity: 'OtpRequest',
       ip: meta.ip,
       userAgent: meta.userAgent,
-      metadata: { phone: phone.slice(-4) }, // last 4 only — no PII
+      metadata: {
+        channel,
+        ...(channel === OtpChannel.PHONE
+          ? { phone: phone?.slice(-4) }
+          : { email: email?.slice(0, 3) + '***' }),
+      },
     });
     return result;
   }
 
-  /**
-   * Verify OTP and log the user in. If no account exists, creates one
-   * (requires firstName on first-time sign-up).
-   */
   async verifyOtp(
-    phone: string,
+    channel: OtpChannel,
+    phone: string | undefined,
+    email: string | undefined,
     code: string,
     firstName: string | undefined,
     meta: AuthMeta,
-  ): Promise<{ user: Pick<User, 'id' | 'phone' | 'firstName' | 'role'>; tokens: TokenPair; isNewUser: boolean }> {
-    const { phone: normalised } = await this.otp.verify(phone, code);
+  ): Promise<{
+    user: Pick<User, 'id' | 'phone' | 'firstName' | 'role'> & { email?: string | null };
+    tokens: TokenPair;
+    isNewUser: boolean;
+  }> {
+    const { identifier } = await this.otp.verify(channel, phone, email, code);
 
-    let user = await this.prisma.user.findUnique({ where: { phone: normalised } });
+    // Look up user by the channel-specific identifier
+    let user: User | null;
+    if (channel === OtpChannel.EMAIL) {
+      user = await this.prisma.user.findUnique({ where: { email: identifier } });
+    } else {
+      user = await this.prisma.user.findUnique({ where: { phone: identifier } });
+    }
+
     let isNewUser = false;
 
     if (!user) {
@@ -55,7 +75,8 @@ export class AuthService {
       }
       user = await this.prisma.user.create({
         data: {
-          phone: normalised,
+          phone: channel === OtpChannel.PHONE ? identifier : '',
+          email: channel === OtpChannel.EMAIL ? identifier : undefined,
           firstName: firstName.trim(),
           role: UserRole.CUSTOMER,
           isVerified: true,
@@ -77,11 +98,17 @@ export class AuthService {
       entityId: user.id,
       ip: meta.ip,
       userAgent: meta.userAgent,
-      metadata: { isNewUser },
+      metadata: { isNewUser, channel },
     });
 
     return {
-      user: { id: user.id, phone: user.phone, firstName: user.firstName, role: user.role },
+      user: {
+        id: user.id,
+        phone: user.phone,
+        email: user.email,
+        firstName: user.firstName,
+        role: user.role,
+      },
       tokens,
       isNewUser,
     };
