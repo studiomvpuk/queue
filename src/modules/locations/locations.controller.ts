@@ -2,7 +2,8 @@ import { Controller, Get, Post, Patch, Param, Body, Query, HttpCode, HttpStatus,
 import { ApiOperation, ApiTags, ApiOkResponse, ApiCreatedResponse, ApiQuery } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
-import { Location, LocationCategory } from '@prisma/client';
+import type { Location } from '@prisma/client';
+import { LocationCategory } from '@prisma/client';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -60,7 +61,7 @@ export class LocationsController {
   @Roles(UserRole.OWNER)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({ summary: 'Create a new location (OWNER only)' })
-  @ApiCreatedResponse({ type: Location })
+  @ApiCreatedResponse({ description: 'Location' })
   async create(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: CreateLocationDto,
@@ -74,7 +75,7 @@ export class LocationsController {
   @Roles(UserRole.OWNER, UserRole.MANAGER)
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @ApiOperation({ summary: 'Update location (OWNER/MANAGER only)' })
-  @ApiOkResponse({ type: Location })
+  @ApiOkResponse({ description: 'Location' })
   async update(
     @Param('id') id: string,
     @CurrentUser() user: AuthenticatedUser,
