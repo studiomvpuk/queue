@@ -24,28 +24,21 @@ import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 
-/**
- * Pre-flight env check. Runs BEFORE NestFactory.create so any missing
- * critical var prints an unmistakable banner to stderr instead of getting
- * swallowed by pino's buffered logger. Without this, Railway shows
- * silence and the container exits with no actionable signal.
- */
-// Pre-flight: warn (not crash) on missing vars — env.validation.ts auto-
-// generates ephemeral JWT secrets so the app always boots.
-{
-  const warn: string[] = [];
-  if (!process.env.DATABASE_URL) warn.push('DATABASE_URL');
-  if (!process.env.JWT_ACCESS_SECRET) warn.push('JWT_ACCESS_SECRET (will use ephemeral)');
-  if (!process.env.JWT_REFRESH_SECRET) warn.push('JWT_REFRESH_SECRET (will use ephemeral)');
-  if (warn.length) {
-    // eslint-disable-next-line no-console
-    console.warn(`[preflight] ⚠️  missing env vars: ${warn.join(', ')}`);
-  }
-}
-
 async function bootstrap() {
+  // Run pending migrations inside the Node process (not a shell wrapper).
+  // This is the same pattern as the working Oracle backend.
   // eslint-disable-next-line no-console
-  console.log('[bootstrap] starting NestFactory.create…');
+  console.log('[boot] running prisma migrate deploy…');
+  try {
+    const { execSync } = await import('child_process');
+    execSync('npx prisma migrate deploy', { stdio: 'inherit' });
+  } catch {
+    // eslint-disable-next-line no-console
+    console.warn('[boot] prisma migrate deploy failed — continuing');
+  }
+
+  // eslint-disable-next-line no-console
+  console.log('[boot] starting NestFactory.create…');
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
