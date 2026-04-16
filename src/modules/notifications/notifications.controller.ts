@@ -1,6 +1,5 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags, ApiOkResponse } from '@nestjs/swagger';
-import { Notification } from '@prisma/client';
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
@@ -11,7 +10,7 @@ export class NotificationsController {
 
   @Get('me')
   @ApiOperation({ summary: 'Get my notification history (paginated)' })
-  @ApiOkResponse({ type: [Notification] })
+  @ApiOkResponse({ description: 'List of notifications for the current user' })
   async getMyNotifications(
     @CurrentUser() user: AuthenticatedUser,
     @Query('cursor') cursor?: string,

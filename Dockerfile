@@ -26,7 +26,7 @@ ENV NODE_ENV=production
 COPY package*.json ./
 COPY prisma ./prisma/
 
-RUN apk add --no-cache openssl
+RUN apk add --no-cache openssl libc6-compat
 RUN npm ci --omit=dev --legacy-peer-deps
 
 COPY --from=builder /app/dist ./dist
