@@ -30,42 +30,18 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
  * swallowed by pino's buffered logger. Without this, Railway shows
  * silence and the container exits with no actionable signal.
  */
-function preflightEnv(): void {
-  const required = [
-    { key: 'DATABASE_URL', min: 1 },
-    { key: 'REDIS_URL', min: 1 },
-    { key: 'JWT_ACCESS_SECRET', min: 32 },
-    { key: 'JWT_REFRESH_SECRET', min: 32 },
-  ];
-  const missing: string[] = [];
-  for (const { key, min } of required) {
-    const v = process.env[key];
-    if (!v || v.length < min) {
-      missing.push(
-        `  - ${key}: ${v ? `too short (${v.length} chars, need ≥${min})` : 'not set'}`,
-      );
-    }
-  }
-  if (missing.length > 0) {
+// Pre-flight: warn (not crash) on missing vars — env.validation.ts auto-
+// generates ephemeral JWT secrets so the app always boots.
+{
+  const warn: string[] = [];
+  if (!process.env.DATABASE_URL) warn.push('DATABASE_URL');
+  if (!process.env.JWT_ACCESS_SECRET) warn.push('JWT_ACCESS_SECRET (will use ephemeral)');
+  if (!process.env.JWT_REFRESH_SECRET) warn.push('JWT_REFRESH_SECRET (will use ephemeral)');
+  if (warn.length) {
     // eslint-disable-next-line no-console
-    console.error(
-      [
-        '',
-        '╔═══════════════════════════════════════════════════════════════╗',
-        '║         ❌  QueueEase backend: missing env vars              ║',
-        '╚═══════════════════════════════════════════════════════════════╝',
-        '',
-        ...missing,
-        '',
-        'Fix: Railway → queue service → Variables → RAW Editor',
-        '   openssl rand -base64 48   (run twice for the two JWT secrets)',
-        '',
-      ].join('\n'),
-    );
-    process.exit(1);
+    console.warn(`[preflight] ⚠️  missing env vars: ${warn.join(', ')}`);
   }
 }
-preflightEnv();
 
 async function bootstrap() {
   // eslint-disable-next-line no-console
@@ -105,10 +81,14 @@ async function bootstrap() {
   app.use(cookieParser());
   app.use(new RequestIdMiddleware().use);
 
-  // CORS: strict allowlist
-  const origins = (config.get<string>('CORS_ORIGINS') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  // CORS: '*' opens everything (dev/testing), comma-list restricts (prod).
+  const corsRaw = config.get<string>('CORS_ORIGINS') ?? '*';
+  const corsOrigin =
+    corsRaw === '*'
+      ? true
+      : corsRaw.split(',').map((s) => s.trim()).filter(Boolean);
   app.enableCors({
-    origin: origins.length ? origins : false,
+    origin: Array.isArray(corsOrigin) && corsOrigin.length === 0 ? true : corsOrigin,
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Authorization', 'Content-Type', 'X-Request-Id', 'X-Client-Version'],
