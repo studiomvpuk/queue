@@ -5,9 +5,9 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "startCommand": "echo '[railway] pwd='$(pwd) && ls dist/ && test -f dist/main.js || (echo 'FATAL: dist/main.js not found' && exit 1) && npx prisma migrate deploy && exec node --enable-source-maps dist/main.js",
+    "startCommand": "npx prisma migrate deploy && node --enable-source-maps dist/main.js",
     "healthcheckPath": "/health",
-    "healthcheckTimeout": 30,
+    "healthcheckTimeout": 120,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
   }

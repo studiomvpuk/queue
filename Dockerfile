@@ -53,4 +53,4 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
 # Migrations run before the app boots so the schema matches the code.
 # `node --enable-source-maps` gives us readable stack traces from dist/.
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["sh", "-c", "echo '[start] pwd='$(pwd) && ls dist && npx prisma migrate deploy && exec node --enable-source-maps dist/main.js"]
+CMD ["sh", "-c", "npx prisma migrate deploy && exec node --enable-source-maps dist/main.js"]

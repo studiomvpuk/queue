@@ -13,7 +13,7 @@
  */
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
-import { ValidationPipe, VersioningType } from '@nestjs/common';
+import { ValidationPipe, VersioningType, RequestMethod } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Logger } from 'nestjs-pino';
@@ -119,7 +119,12 @@ async function bootstrap() {
   // API prefix and URI versioning: /api/v1/*
   const apiPrefix = config.get<string>('API_PREFIX') ?? 'api/v1';
   const [prefix, versionSegment] = apiPrefix.split('/');
-  app.setGlobalPrefix(prefix, { exclude: ['health', 'metrics'] });
+  app.setGlobalPrefix(prefix, {
+    exclude: [
+      { path: 'health', method: RequestMethod.ALL },
+      { path: 'metrics', method: RequestMethod.ALL },
+    ],
+  });
   if (versionSegment) {
     app.enableVersioning({
       type: VersioningType.URI,
