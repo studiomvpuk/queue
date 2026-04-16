@@ -67,24 +67,26 @@ export class AuthService {
     let isNewUser = false;
 
     if (!user) {
-      if (!firstName?.trim()) {
-        throw new BadRequestException({
-          error: 'FIRST_NAME_REQUIRED',
-          message: 'First name is required for sign-up',
-        });
-      }
+      // Create account — firstName is optional here and can be set later
+      // during onboarding via PATCH /users/me
       user = await this.prisma.user.create({
         data: {
           phone: channel === OtpChannel.PHONE ? identifier : '',
           email: channel === OtpChannel.EMAIL ? identifier : undefined,
-          firstName: firstName.trim(),
+          firstName: firstName?.trim() || '',
           role: UserRole.CUSTOMER,
           isVerified: true,
         },
       });
       isNewUser = true;
     } else {
-      if (!user.isVerified) {
+      // Update firstName if provided and user doesn't have one
+      if (firstName?.trim() && !user.firstName) {
+        user = await this.prisma.user.update({
+          where: { id: user.id },
+          data: { firstName: firstName.trim(), isVerified: true },
+        });
+      } else if (!user.isVerified) {
         await this.prisma.user.update({ where: { id: user.id }, data: { isVerified: true } });
       }
     }
