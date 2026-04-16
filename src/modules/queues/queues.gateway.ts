@@ -10,8 +10,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
-import { createAdapter } from '@socket.io/redis-adapter';
-import { Redis } from 'ioredis';
 
 interface AuthSocket extends Socket {
   data: {
@@ -23,7 +21,7 @@ interface AuthSocket extends Socket {
 @Injectable()
 @WebSocketGateway({
   cors: {
-    origin: (process.env.CORS_ORIGINS ?? '').split(',').map((s) => s.trim()),
+    origin: (process.env.CORS_ORIGINS ?? '*').split(',').map((s) => s.trim()),
     credentials: true,
   },
   transports: ['websocket', 'polling'],
@@ -39,14 +37,33 @@ export class QueuesGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   async afterInit(server: Server) {
     this.io = server;
-    // Setup Redis adapter for horizontal scaling
-    const pubClient = new Redis({
-      host: this.config.get('REDIS_HOST') ?? 'localhost',
-      port: this.config.get('REDIS_PORT') ?? 6379,
-      password: this.config.get('REDIS_PASSWORD'),
-    });
-    const subClient = pubClient.duplicate();
-    server.adapter(createAdapter(pubClient, subClient));
+
+    // Redis adapter for horizontal scaling — optional.
+    // If Redis isn't available the gateway still works (single-node only).
+    const redisUrl = this.config.get<string>('REDIS_URL');
+    if (redisUrl) {
+      try {
+        const { Redis } = await import('ioredis');
+        const { createAdapter } = await import('@socket.io/redis-adapter');
+        const pubClient = new Redis(redisUrl, {
+          maxRetriesPerRequest: 3,
+          enableOfflineQueue: false,
+          lazyConnect: true,
+        });
+        pubClient.on('error', (e) => this.logger.warn(`Redis pub error: ${e.message}`));
+
+        const subClient = pubClient.duplicate();
+        subClient.on('error', (e) => this.logger.warn(`Redis sub error: ${e.message}`));
+
+        await pubClient.connect();
+        await subClient.connect();
+
+        server.adapter(createAdapter(pubClient, subClient));
+        this.logger.log('Socket.io Redis adapter connected');
+      } catch (err: any) {
+        this.logger.warn(`Socket.io Redis adapter unavailable — running single-node: ${err.message}`);
+      }
+    }
   }
 
   async handleConnection(socket: AuthSocket) {
@@ -60,7 +77,6 @@ export class QueuesGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const payload = await this.jwt.verifyAsync(token);
       socket.data.userId = payload.sub;
       socket.data.role = payload.role;
-      // Auto-join the user's private room so notifyUser() actually reaches them.
       socket.join(`user:${payload.sub}`);
       this.logger.log(`User ${payload.sub} connected`);
     } catch {
@@ -84,9 +100,6 @@ export class QueuesGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.logger.log(`User ${socket.data.userId} unsubscribed from location ${locationId}`);
   }
 
-  /**
-   * Public method for services to broadcast location updates.
-   */
   broadcastLocationUpdate(locationId: string, payload: any): void {
     this.io.to(`location:${locationId}`).emit('locationUpdate', {
       locationId,
@@ -95,9 +108,6 @@ export class QueuesGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
   }
 
-  /**
-   * Public method for services to notify a specific user.
-   */
   notifyUser(userId: string, payload: any): void {
     this.io.to(`user:${userId}`).emit('notification', {
       ...payload,

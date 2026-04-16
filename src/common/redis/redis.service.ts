@@ -1,13 +1,16 @@
-import { Injectable, OnModuleDestroy, OnModuleInit, Logger, Inject } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, OnModuleInit, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 
 /**
  * RedisService — single ioredis connection used by:
  *   - Cache layer (locations, rolling stats)
- *   - Rate-limit counters (some routes use Redis-backed throttler)
- *   - Socket.io adapter pub/sub (separate clients created in QueuesGateway)
- *   - BullMQ job queues (separate connection created in BullMQ config)
+ *   - Rate-limit counters
+ *   - Socket.io adapter pub/sub (separate clients in QueuesGateway)
+ *
+ * Non-fatal: if Redis is unavailable the app stays up but cache ops
+ * silently fail. This lets Railway healthchecks pass while Redis
+ * provisions or reconnects.
  */
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
@@ -21,41 +24,50 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     this.client = new Redis(url, {
       maxRetriesPerRequest: 3,
       enableReadyCheck: true,
-      reconnectOnError: (err) => {
-        this.logger.warn(`Redis reconnect on: ${err.message}`);
-        return true;
+      enableOfflineQueue: false,
+      retryStrategy(times) {
+        // Exponential backoff capped at 10 seconds
+        return Math.min(times * 500, 10_000);
       },
     });
 
     this.client.on('ready', () => this.logger.log('Redis connected'));
-    this.client.on('error', (e) => this.logger.error(`Redis error: ${e.message}`));
+    this.client.on('error', (e) => this.logger.warn(`Redis error: ${e.message}`));
+    this.client.on('close', () => this.logger.warn('Redis connection closed'));
   }
 
   async onModuleDestroy() {
-    await this.client?.quit();
+    await this.client?.quit().catch(() => {});
   }
 
-  // Convenience helpers
+  // Convenience helpers — all silently fail when Redis is down
   async setJson<T>(key: string, value: T, ttlSeconds?: number): Promise<void> {
-    const payload = JSON.stringify(value);
-    if (ttlSeconds) await this.client.set(key, payload, 'EX', ttlSeconds);
-    else await this.client.set(key, payload);
+    try {
+      const payload = JSON.stringify(value);
+      if (ttlSeconds) await this.client.set(key, payload, 'EX', ttlSeconds);
+      else await this.client.set(key, payload);
+    } catch {
+      // Redis unavailable — skip cache write
+    }
   }
 
   async getJson<T>(key: string): Promise<T | null> {
-    const raw = await this.client.get(key);
-    if (!raw) return null;
     try {
+      const raw = await this.client.get(key);
+      if (!raw) return null;
       return JSON.parse(raw) as T;
     } catch {
       return null;
     }
   }
 
-  /** Atomic counter for things like OTP attempts, throttle counters. */
   async increment(key: string, ttlSeconds: number): Promise<number> {
-    const n = await this.client.incr(key);
-    if (n === 1) await this.client.expire(key, ttlSeconds);
-    return n;
+    try {
+      const n = await this.client.incr(key);
+      if (n === 1) await this.client.expire(key, ttlSeconds);
+      return n;
+    } catch {
+      return 0;
+    }
   }
 }
