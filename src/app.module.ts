@@ -55,7 +55,7 @@ import { UssdModule } from './modules/ussd/ussd.module';
           ],
           remove: true,
         },
-        customProps: (req) => ({ requestId: (req as any).id }),
+        customProps: (req: any) => ({ requestId: req.id }),
       },
     }),
     // Global rate limit — per-route limits override via @Throttle()
