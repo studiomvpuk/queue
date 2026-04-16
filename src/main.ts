@@ -25,13 +25,13 @@ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 
 async function bootstrap() {
-  // Run pending migrations inside the Node process (not a shell wrapper).
-  // This is the same pattern as the working Oracle backend.
+  // Run pending migrations using the PROJECT's prisma binary (not npx,
+  // which may pull a newer major version that breaks the schema syntax).
   // eslint-disable-next-line no-console
   console.log('[boot] running prisma migrate deploy…');
   try {
     const { execSync } = await import('child_process');
-    execSync('npx prisma migrate deploy', { stdio: 'inherit' });
+    execSync('node_modules/.bin/prisma migrate deploy', { stdio: 'inherit' });
   } catch {
     // eslint-disable-next-line no-console
     console.warn('[boot] prisma migrate deploy failed — continuing');
