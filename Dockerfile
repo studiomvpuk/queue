@@ -28,9 +28,9 @@ COPY prisma ./prisma/
 
 RUN apk add --no-cache openssl libc6-compat
 RUN npm ci --omit=dev --legacy-peer-deps
+RUN npx prisma generate
 
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 
 EXPOSE 3333
 
