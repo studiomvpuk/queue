@@ -7,7 +7,6 @@ import {
   IsOptional,
   MinLength,
   MaxLength,
-  IsUrl,
   ValidateIf,
 } from 'class-validator';
 
@@ -38,99 +37,43 @@ export enum BusinessCategory {
 }
 
 export class RegisterBusinessDto {
-  // ── Business Info ──
+  // ── Always required ──
+
+  @ApiProperty({ example: 'tolu@acmehospital.com' })
+  @IsEmail()
+  email!: string;
+
+  @ApiProperty({ example: 'StrongP@ss1' })
+  @IsString()
+  @MinLength(8, { message: 'Password must be at least 8 characters' })
+  password!: string;
+
   @ApiProperty({ example: 'Acme Hospital' })
   @IsString()
   @MinLength(2)
   @MaxLength(120)
-  name!: string;
+  businessName!: string;
 
   @ApiProperty({ enum: BusinessSize, example: BusinessSize.SME })
   @IsEnum(BusinessSize)
   size!: BusinessSize;
 
-  @ApiProperty({ enum: BusinessType, example: BusinessType.LIMITED_LIABILITY })
-  @IsEnum(BusinessType)
-  type!: BusinessType;
+  // ── SME / Enterprise only ──
 
-  @ApiProperty({ enum: BusinessCategory, example: BusinessCategory.HOSPITAL })
-  @IsEnum(BusinessCategory)
-  category!: BusinessCategory;
+  @ApiPropertyOptional({ enum: BusinessType, example: BusinessType.LIMITED_LIABILITY })
+  @ValidateIf((o) => o.size !== BusinessSize.INDIVIDUAL)
+  @IsEnum(BusinessType, { message: 'Please select a business type' })
+  type?: BusinessType;
 
-  @ApiPropertyOptional({ example: 'Leading healthcare provider in Lagos' })
-  @IsOptional()
-  @IsString()
-  @MaxLength(500)
-  description?: string;
+  @ApiPropertyOptional({ enum: BusinessCategory, example: BusinessCategory.HOSPITAL })
+  @ValidateIf((o) => o.size !== BusinessSize.INDIVIDUAL)
+  @IsEnum(BusinessCategory, { message: 'Please select an industry' })
+  category?: BusinessCategory;
 
-  // ── Legal / Verification ──
-  // CAC number is required for SME and ENTERPRISE
   @ApiPropertyOptional({ example: 'RC-123456' })
   @ValidateIf((o) => o.size !== BusinessSize.INDIVIDUAL)
   @IsNotEmpty({ message: 'CAC Registration Number is required for SME and Enterprise businesses' })
   @IsString()
   @MinLength(3, { message: 'CAC Registration Number must be at least 3 characters' })
   cacNumber?: string;
-
-  @ApiPropertyOptional({ example: '12345678-0001' })
-  @IsOptional()
-  @IsString()
-  tinNumber?: string;
-
-  // ── Contact Person ──
-  @ApiProperty({ example: 'Tolu' })
-  @IsString()
-  @MinLength(2)
-  contactFirstName!: string;
-
-  @ApiProperty({ example: 'Adeyemi' })
-  @IsString()
-  @MinLength(2)
-  contactLastName!: string;
-
-  @ApiProperty({ example: 'tolu@acmehospital.com' })
-  @IsEmail()
-  contactEmail!: string;
-
-  @ApiProperty({ example: '+2348012345678' })
-  @IsString()
-  @MinLength(10)
-  contactPhone!: string;
-
-  @ApiPropertyOptional({ example: 'CEO' })
-  @IsOptional()
-  @IsString()
-  contactRole?: string;
-
-  // ── Business Contact ──
-  @ApiPropertyOptional({ example: 'info@acmehospital.com' })
-  @IsOptional()
-  @IsEmail()
-  businessEmail?: string;
-
-  @ApiPropertyOptional({ example: '+2341234567' })
-  @IsOptional()
-  @IsString()
-  businessPhone?: string;
-
-  @ApiPropertyOptional({ example: 'https://acmehospital.com' })
-  @IsOptional()
-  @IsUrl()
-  website?: string;
-
-  // ── Address ──
-  @ApiPropertyOptional({ example: '12 Marina Road' })
-  @IsOptional()
-  @IsString()
-  address?: string;
-
-  @ApiPropertyOptional({ example: 'Lagos' })
-  @IsOptional()
-  @IsString()
-  city?: string;
-
-  @ApiPropertyOptional({ example: 'Lagos' })
-  @IsOptional()
-  @IsString()
-  state?: string;
 }

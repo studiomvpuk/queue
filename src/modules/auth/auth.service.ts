@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import * as argon2 from 'argon2';
 import { AuditAction, User, UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AuditService } from '../../common/audit/audit.service';
@@ -113,6 +114,52 @@ export class AuthService {
       },
       tokens,
       isNewUser,
+    };
+  }
+
+  /**
+   * Email + password login — used by business portal.
+   */
+  async loginWithPassword(
+    email: string,
+    password: string,
+    meta: AuthMeta,
+  ): Promise<{
+    user: Pick<User, 'id' | 'phone' | 'firstName' | 'role'> & { email?: string | null };
+    tokens: TokenPair;
+  }> {
+    const user = await this.prisma.user.findUnique({ where: { email } });
+
+    if (!user || !user.passwordHash) {
+      throw new UnauthorizedException('Invalid email or password');
+    }
+
+    const valid = await argon2.verify(user.passwordHash, password);
+    if (!valid) {
+      throw new UnauthorizedException('Invalid email or password');
+    }
+
+    const tokens = await this.tokens.issuePair(user, meta);
+
+    await this.audit.record({
+      userId: user.id,
+      action: AuditAction.USER_LOGIN,
+      entity: 'User',
+      entityId: user.id,
+      ip: meta.ip,
+      userAgent: meta.userAgent,
+      metadata: { method: 'password' },
+    });
+
+    return {
+      user: {
+        id: user.id,
+        phone: user.phone,
+        email: user.email,
+        firstName: user.firstName,
+        role: user.role,
+      },
+      tokens,
     };
   }
 

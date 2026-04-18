@@ -97,6 +97,7 @@ model User {
   phone            String?   @unique  // nullable for email-only signups
   firstName        String
   email            String?   @unique  // nullable for phone-only signups
+  passwordHash     String?            // nullable — only set for email/password business accounts
   role             UserRole  @default(CUSTOMER)
   isVerified       Boolean   @default(false)
   isAccessibility  Boolean   @default(false) // elderly/accessibility — priority slot eligibility

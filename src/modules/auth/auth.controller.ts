@@ -9,6 +9,7 @@ import { AuthService } from './auth.service';
 import { RequestOtpDto } from './dto/request-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { LoginPasswordDto } from './dto/login-password.dto';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -34,6 +35,18 @@ export class AuthController {
   @ApiOperation({ summary: 'Verify OTP, sign in or sign up' })
   verifyOtp(@Body() dto: VerifyOtpDto, @Ip() ip: string, @Req() req: Request) {
     return this.auth.verifyOtp(dto.channel, dto.phone, dto.email, dto.otp, dto.firstName, {
+      ip,
+      userAgent: req.header('user-agent'),
+    });
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('login')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Login with email and password (business portal)' })
+  loginWithPassword(@Body() dto: LoginPasswordDto, @Ip() ip: string, @Req() req: Request) {
+    return this.auth.loginWithPassword(dto.email, dto.password, {
       ip,
       userAgent: req.header('user-agent'),
     });
